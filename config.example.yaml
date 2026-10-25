@@ -1,0 +1,66 @@
+# AI Engineering Toolkit configuration
+# Copy this file to config.yaml and fill in your values.
+# Never commit config.yaml (it may contain keys). It is gitignored.
+
+paths:
+  # Your existing repos
+  trading_dir: ~/trading
+  job_automation_dir: ~/AI-Job-Automation
+  n8n_dir: ~/.n8n
+
+  # Toolkit local state
+  state_dir: ./state
+  reports_dir: ./reports
+  ledger_file: ./state/pending.jsonl   # local source of truth for pending items
+
+# LLM (optional — toolkit works without it via template fallback)
+llm:
+  enabled: false
+  provider: openai-compatible   # openai-compatible | ollama | anthropic | none
+  base_url: http://localhost:11434/v1   # ollama default
+  model: nemotron-3.5-super   # or any model you have access to
+  api_key: ${LLM_API_KEY}       # set in env; never hardcode
+  temperature: 0.3
+  max_tokens: 600
+
+# Supabase (optional — sync pending items to Supabase; never blocks local runs)
+supabase:
+  enabled: false
+  url: ${SUPABASE_URL}
+  service_key: ${SUPABASE_SERVICE_KEY}
+  table: pending_items
+
+# Trading integration (matches your existing executor.py lock)
+trading:
+  ledger_file: ~/trading/ledger.jsonl
+  env_file: ~/trading/.env
+  risk_caps:
+    risk_per_trade_pct: 1
+    max_leverage: 5
+    max_book_x: 2
+    daily_halt_pct: 3
+    drawdown_halt_pct: 10
+  # Live trading stays locked unless you set these in your .env:
+  #   TRADING_MODE=live
+  #   TRADING_CONFIRM=I_UNDERSTAND_REAL_MONEY
+
+# Sources to scan (add your own by extending orchestrator.py)
+sources:
+  trading_ledger: true
+  trading_reports: true
+  blofin_account: true
+  job_automation: true
+  inbox_files: false      # point at a folder of .txt/.md files if you want
+  inbox_path: ~/notes
+
+# Scoring weights (1–5 each)
+scoring:
+  impact_default: 3
+  urgency_default: 3
+  effort_default: 3
+
+# Safety
+safety:
+  dry_run_by_default: true
+  require_execute_flag: true
+  max_auto_actions_per_run: 0   # 0 = never auto-execute; always ask

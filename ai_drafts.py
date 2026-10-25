@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""AI draft generator — first drafts for anything pending that needs a human to act.
+
+Backends (in priority order):
+  1. Configured LLM (OpenAI-compatible / Ollama / Anthropic) if `llm.enabled` is true
+  2. Deterministic template fallback (always works, no keys needed)
+
+The toolkit never sends anything. It only produces a draft string. You review and
+send/commit/trade.
+
+Usage:
+  python3 ai_drafts.py --kind email --title "..." --body "..." --target "alice@example.com"
+  python3 ai_drafts.py --kind slack --title "..." --body "..."
+  python3 ai_drafts.py --kind report --title "Daily report" --body "..."
+  python3 ai_drafts.py --kind commit --title "fix: ..." --body "..."
+  python3 ai_drafts.py --kind trade --title "BTC-USDT carry" --body "..."
+  python3 ai_drafts.py --kind review --title "..." --body "..."
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.request
+import urllib.error
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.yaml")
+
+
+def load_config(path=CONFIG_FILE):
+    cfg = {
+        "llm": {"enabled": False, "provider": "openai-compatible", "base_url": "",
+                "model": "", "api_key": "", "temperature": 0.3, "max_tokens": 600},
+    }
+    if yaml and os.path.exists(path):
+        try:
+            with open(path) as fh:
+                disk = yaml.safe_load(fh) or {}
+            cfg.update(disk)
+        except Exception:
+            pass
+    # env overrides for secrets
+    cfg["llm"]["api_key"] = os.environ.get("LLM_API_KEY", cfg["llm"].get("api_key", ""))
+    return cfg
+
+
+def _llm_chat(cfg, system, user, temperature=None):
+    """Call a configured LLM. Returns (text, error)."""
+    llm = cfg.get("llm", {})
+    if not llm.get("enabled"):
+        return None, "llm not enabled"
+
+    provider = llm.get("provider", "openai-compatible")
+    base_url = (llm.get("base_url") or "").rstrip("/")
+    model = llm.get("model") or ""
+    api_key = llm.get("api_key") or ""
+    temperature = llm.get("temperature", 0.3) if temperature is None else temperature
+    max_tokens = llm.get("max_tokens", 600)
+
+    try:
+        if provider == "ollama":
+            # Ollama /api/chat
+            url = base_url + "/api/chat" if base_url else "http://localhost:11434/api/chat"
+            payload = {
+                "model": model or "nemotron-3.5-super",
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "stream": False,
+                "options": {"temperature": temperature, "num_predict": max_tokens},
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data, method="POST")
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                obj = json.loads(resp.read().decode("utf-8"))
+            return obj.get("message", {}).get("content", ""), None
+
+        else:
+            # OpenAI-compatible /v1/chat/completions
+            url = (base_url or "https://api.openai.com/v1") + "/chat/completions"
+            payload = {
+                "model": model or "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data, method="POST")
+            req.add_header("Content-Type", "application/json")
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                obj = json.loads(resp.read().decode("utf-8"))
+            return obj["choices"][0]["message"]["content"], None
+
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
+            KeyError, OSError) as exc:
+        return None, str(exc)
+
+
+# ------------------------------------------------------------------ templates
+SYSTEM_PROMPT = """You are an expert engineering assistant. Write a concise, professional first draft
+for the user to review before they send/commit/trade. Never send on the user's behalf.
+Keep it short, actionable, and include a clear subject/opening line. Mark it as a draft."""
+
+
+def _template(kind, title, body, target=""):
+    now = time.strftime("%Y-%m-%d %H:%M")
+    templates = {
+        "email": (
+            f"Subject: Action needed — {title}\n"
+            f"To: {target or 'recipient@example.com'}\n"
+            f"Date: {now}\n\n"
+            f"{body}\n\n"
+            f"---\n"
+            f"(Draft generated by AI Engineering Toolkit. Review before sending.)"
+        ),
+        "slack": (
+            f"*Action needed:* {title}\n"
+            f"{body}\n\n"
+            f"_(Draft generated by AI Engineering Toolkit. Review before sending.)_"
+        ),
+        "report": (
+            f"# {title}\n\n"
+            f"{body}\n\n"
+            f"---\n"
+            f"*Generated by AI Engineering Toolkit on {now}. Review before publishing.*"
+        ),
+        "commit": (
+            f"{title}\n\n"
+            f"{body}\n\n"
+            f"---\n"
+            f"(Draft commit message — review and amend before committing.)"
+        ),
+        "trade": (
+            f"TRADE DRAFT — {title}\n"
+            f"{body}\n\n"
+            f"⚠️  DO NOT EXECUTE without RiskGate approval. "
+            f"(Draft generated by AI Engineering Toolkit.)"
+        ),
+        "review": (
+            f"# Review: {title}\n\n"
+            f"{body}\n\n"
+            f"---\n"
+            f"(Draft for review — AI Engineering Toolkit.)"
+        ),
+        "none": body,
+    }
+    return templates.get(kind, body)
+
+
+def draft(kind, title, body, target="", cfg=None, force_template=False):
+    """Return a first-draft string for the given kind."""
+    cfg = cfg or load_config()
+    if not force_template and cfg.get("llm", {}).get("enabled"):
+        text, err = _llm_chat(
+            cfg,
+            system=SYSTEM_PROMPT,
+            user=(
+                f"Kind: {kind}\n"
+                f"Title: {title}\n"
+                f"Target: {target or '-'}\n"
+                f"Body/Context:\n{body}\n\n"
+                f"Write a concise first draft suitable for the user to review before acting."
+            ),
+        )
+        if text:
+            return text
+        # fall through to template on any LLM error
+    return _template(kind, title, body, target)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="AI draft generator")
+    ap.add_argument("--kind", choices=["email", "slack", "report", "commit", "trade", "review", "none"],
+                    default="review", help="draft type")
+    ap.add_argument("--title", required=True, help="title/subject")
+    ap.add_argument("--body", required=True, help="body/context")
+    ap.add_argument("--target", default="", help="recipient / target")
+    ap.add_argument("--config", default=CONFIG_FILE, help="path to config.yaml")
+    ap.add_argument("--template", action="store_true", help="force template (skip LLM)")
+    args = ap.parse_args()
+
+    cfg = load_config(args.config)
+    text = draft(args.kind, args.title, args.body, args.target, cfg, force_template=args.template)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

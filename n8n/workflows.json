@@ -1,0 +1,119 @@
+{
+  "name": "AI Engineering Toolkit — pending items",
+  "description": "n8n workflows that feed the pending-items tracker. Import via Settings → Import.",
+  "version": 2,
+  "workflows": [
+    {
+      "name": "Trading alerts → pending items",
+      "nodes": [
+        {
+          "parameters": {"cronExpression": "*/15 * * * *"},
+          "name": "Cron every 15 min",
+          "type": "n8n-nodes-base.cron",
+          "typeVersion": 1,
+          "position": [240, 300]
+        },
+        {
+          "parameters": {
+            "command": "python3 /Users/shivgoud/ai_engineering_tools/orchestrator.py --source trading_ledger",
+            "execute": "python3 /Users/shivgoud/ai_engineering_tools/orchestrator.py --source trading_ledger"
+          },
+          "name": "Run orchestrator (trading_ledger)",
+          "type": "n8n-nodes-base.executeCommand",
+          "typeVersion": 1,
+          "position": [460, 300]
+        }
+      ],
+      "connections": {
+        "Cron every 15 min": {"main": [[{"node": "Run orchestrator (trading_ledger)", "type": "main", "index": 0}]]}
+      },
+      "active": false,
+      "settings": {},
+      "id": "trading-alerts-to-pending"
+    },
+    {
+      "name": "BloFin credential check → pending items",
+      "nodes": [
+        {
+          "parameters": {"cronExpression": "0 9 * * *"},
+          "name": "Cron daily 09:00",
+          "type": "n8n-nodes-base.cron",
+          "typeVersion": 1,
+          "position": [240, 500]
+        },
+        {
+          "parameters": {
+            "command": "python3 /Users/shivgoud/ai_engineering_tools/orchestrator.py --source blofin_account",
+            "execute": "python3 /Users/shivgoud/ai_engineering_tools/orchestrator.py --source blofin_account"
+          },
+          "name": "Run orchestrator (blofin_account)",
+          "type": "n8n-nodes-base.executeCommand",
+          "typeVersion": 1,
+          "position": [460, 500]
+        }
+      ],
+      "connections": {
+        "Cron daily 09:00": {"main": [[{"node": "Run orchestrator (blofin_account)", "type": "main", "index": 0}]]}
+      },
+      "active": false,
+      "settings": {},
+      "id": "blofin-account-check"
+    },
+    {
+      "name": "Inbox files → pending items",
+      "nodes": [
+        {
+          "parameters": {"cronExpression": "*/30 * * * *"},
+          "name": "Cron every 30 min",
+          "type": "n8n-nodes-base.cron",
+          "typeVersion": 1,
+          "position": [240, 700]
+        },
+        {
+          "parameters": {
+            "command": "python3 /Users/shivgoud/ai_engineering_tools/orchestrator.py --source inbox_files",
+            "execute": "python3 /Users/shivgoud/ai_engineering_tools/orchestrator.py --source inbox_files"
+          },
+          "name": "Run orchestrator (inbox_files)",
+          "type": "n8n-nodes-base.executeCommand",
+          "typeVersion": 1,
+          "position": [460, 700]
+        }
+      ],
+      "connections": {
+        "Cron every 30 min": {"main": [[{"node": "Run orchestrator (inbox_files)", "type": "main", "index": 0}]]}
+      },
+      "active": false,
+      "settings": {},
+      "id": "inbox-files-to-pending"
+    },
+    {
+      "name": "Weekly review report",
+      "nodes": [
+        {
+          "parameters": {"cronExpression": "0 9 * * 1"},
+          "name": "Cron weekly Mondays 09:00",
+          "type": "n8n-nodes-base.cron",
+          "typeVersion": 1,
+          "position": [240, 900]
+        },
+        {
+          "parameters": {
+            "command": "python3 /Users/shivgoud/ai_engineering_tools/weekly_review.py --write --days 7",
+            "execute": "python3 /Users/shivgoud/ai_engineering_tools/weekly_review.py --write --days 7"
+          },
+          "name": "Generate weekly review report",
+          "type": "n8n-nodes-base.executeCommand",
+          "typeVersion": 1,
+          "position": [460, 900]
+        }
+      ],
+      "connections": {
+        "Cron weekly Mondays 09:00": {"main": [[{"node": "Generate weekly review report", "type": "main", "index": 0}]]}
+      },
+      "active": false,
+      "settings": {},
+      "id": "weekly-review-report"
+    }
+  ]
+}

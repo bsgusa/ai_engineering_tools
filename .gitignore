@@ -1,0 +1,8 @@
+# AI Engineering Toolkit local state (never commit)
+state/
+reports/
+config.yaml
+.env
+__pycache__/
+*.pyc
+.DS_Store
