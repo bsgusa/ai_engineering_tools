@@ -18,6 +18,8 @@ unless you explicitly execute.
 - [x] Dedupe command (`--dedupe`) to collapse duplicate runs
 - [ ] Init git repo + push to GitHub (blocked on shell DNS / GitHub credentials)
 - [ ] Wire Supabase sync (optional mirror; local JSONL stays source of truth)
+- [x] Cross-link `~/bala-nexus` both directions (CP-002, 2026-11-06): hub `company/repos.json` + world map reference this repo; this README documents the fit
+- [x] Weekly review scheduled — `launchd` Monday 09:00 `weekly_review.py --write --days 7` (CP-001, 2026-11-06; command verified live before scheduling)
 
 ## [NEXT] — AI self-improvement + execution hooks
 

@@ -5,8 +5,18 @@ A modular, inspectable automation layer that understands your work and turns
 
 - `~/trading` — BloFin delta-neutral carry bot (Python, stdlib, Supabase ledger, RiskGate)
 - `~/AI-Job-Automation` — Lexora job-automation web stack (Supabase, Next.js-ish)
+- `~/bala-nexus` — the New World hub: the world map that indexes this repo (see below)
 - `n8n` — workflow automation
 - Anything else you point it at
+
+## Where this fits in the world
+
+This toolkit is the **compute lane's standing automation** in the Balamonis
+New World. The hub `~/bala-nexus` maps this repo and its role
+(`docs/COMPUTE_LANE.md` and `docs/NEW_WORLD.md`); the other half of the lane —
+parallel agent swarms run from an OpenCode session — is documented there too.
+Product and automation truth stays in this repo; the hub references it and
+does not edit it.
 
 ## Philosophy
 
