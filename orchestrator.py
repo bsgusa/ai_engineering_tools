@@ -517,10 +517,12 @@ class Orchestrator:
                 print(f"  source {src_name} failed: {exc}", file=sys.stderr)
                 found = []
             for item in found:
-                # score defaults
-                item.setdefault("impact", self.cfg["scoring"]["impact_default"])
-                item.setdefault("urgency", self.cfg["scoring"]["urgency_default"])
-                item.setdefault("effort", self.cfg["scoring"]["effort_default"])
+                # score defaults (audit 2026-11-06, B-7: a partial/null
+                # `scoring:` block used to hard-crash the whole run)
+                scored_cfg = self.cfg.get("scoring") or {}
+                item.setdefault("impact", scored_cfg.get("impact_default", 3))
+                item.setdefault("urgency", scored_cfg.get("urgency_default", 3))
+                item.setdefault("effort", scored_cfg.get("effort_default", 3))
                 item["score"] = PendingTracker.score(item["impact"], item["urgency"], item["effort"])
                 # draft
                 item["draft"] = draft(
@@ -532,8 +534,11 @@ class Orchestrator:
                 item["updated_at"] = iso_now()
                 all_items.append(item)
 
-        # Insert into tracker (dedupe by title+source within this run is handled by tracker IDs)
+        # Insert into tracker. Cross-run dedupe lives in tracker.add(): an
+        # open item with the same source+title is refreshed, not duplicated
+        # (audit 2026-11-07). `_refreshed` is a per-run flag, never stored.
         inserted = []
+        refreshed = []
         for item in all_items:
             rec = self.tracker.add(
                 source=item["source"],
@@ -547,9 +552,14 @@ class Orchestrator:
                 due=item.get("due", ""),
                 metadata=item.get("metadata", {}),
             )
-            inserted.append(rec)
+            if rec.pop("_refreshed", False):
+                refreshed.append(rec)
+            else:
+                inserted.append(rec)
 
-        # Execute actions
+        # Execute actions — only for genuinely new items. A refreshed item
+        # already had its action drafted/run this cycle; re-running it would
+        # duplicate output (and side effects, if execution were ever enabled).
         results = []
         for rec in inserted:
             res = self.actions.run(rec, rec["draft"])
@@ -557,11 +567,11 @@ class Orchestrator:
 
         # Optional report
         if self.report:
-            self._write_report(inserted, results)
+            self._write_report(inserted, results, refreshed)
 
-        return {"inserted": inserted, "results": results}
+        return {"inserted": inserted, "refreshed": refreshed, "results": results}
 
-    def _write_report(self, inserted, results):
+    def _write_report(self, inserted, results, refreshed=()):
         reports_dir = Path(EXPAND_USER(self.cfg["paths"]["reports_dir"]))
         reports_dir.mkdir(parents=True, exist_ok=True)
         path = reports_dir / f"orchestrator-{time.strftime('%Y-%m-%d')}.md"
@@ -569,12 +579,18 @@ class Orchestrator:
         lines.append(f"Mode: {'EXECUTE' if self.execute else 'DRY-RUN'}")
         lines.append(f"Sources: {', '.join(self.selected)}")
         lines.append(f"New pending items: {len(inserted)}")
+        lines.append(f"Existing items refreshed (deduped): {len(refreshed)}")
         lines.append(f"Actions executed: {sum(1 for r in results if r['executed'])}")
         lines.append(f"Actions skipped: {sum(1 for r in results if r['skipped'])}")
         lines.append("")
         lines.append("## New pending items (by score)")
         for r in sorted(inserted, key=lambda x: x["score"], reverse=True):
             lines.append(f"- [{r['id']}] {r['title']} — score {r['score']} ({r['source']})")
+        if refreshed:
+            lines.append("")
+            lines.append("## Refreshed (already open — not duplicated)")
+            for r in sorted(refreshed, key=lambda x: x["score"], reverse=True):
+                lines.append(f"- [{r['id']}] {r['title']} — score {r['score']} ({r['source']})")
         lines.append("")
         lines.append("## Action results")
         for res in results:
@@ -587,21 +603,31 @@ class Orchestrator:
 def main():
     ap = argparse.ArgumentParser(description="AI Engineering Toolkit orchestrator")
     ap.add_argument("--dry-run", action="store_true", default=True,
-                    help="scan and draft only (default)")
+                    help="scan and draft only (the only mode in this milestone)")
     ap.add_argument("--execute", action="store_true",
-                    help="actually execute approved actions")
+                    help="declared for compatibility; refused with an explanation — "
+                         "drafts only, no send/commit/trade (see ROADMAP [LATER])")
     ap.add_argument("--approve-all", action="store_true",
-                    help="execute every drafted action without asking")
+                    help="declared for compatibility; no effect without an executing mode")
     ap.add_argument("--source", action="append", help="scan only this source (repeatable)")
     ap.add_argument("--report", action="store_true", help="write a run report to reports/")
     ap.add_argument("--config", default=CONFIG_FILE, help="path to config.yaml")
     args = ap.parse_args()
 
-    # Safety: --execute overrides --dry-run; require --execute for any action
-    execute = args.execute and not args.dry_run
-    if args.execute and args.dry_run:
-        print("Note: --execute overrides --dry-run.", file=sys.stderr)
-
+    # Safety (audit 2026-11-06, B-1): the previous code printed "Note: --execute
+    # overrides --dry-run." while execution was arithmetically unreachable —
+    # a documented lie. Execution hooks are intentionally NOT enabled in this
+    # milestone: this tool drafts; it does not send, commit, or trade. The
+    # flags stay declared so scripts that referenced them do not break.
+    execute = False
+    if args.execute:
+        print(
+            "REFUSED: --execute does not execute anything in this milestone.\n"
+            "  Actions are drafted, scored, and reported; the human stays the\n"
+            "  send/commit/trade step. See ROADMAP.md ([LATER] execution hooks)\n"
+            "  and reports/python-audit-2026-11-06.md (finding B-1).",
+            file=sys.stderr,
+        )
     cfg = load_cfg(args.config)
     orch = Orchestrator(
         cfg, execute=execute, approve_all=args.approve_all,
@@ -609,7 +635,10 @@ def main():
     )
     out = orch.run()
 
-    print(f"\nOrchestrator complete. {len(out['inserted'])} new pending item(s).")
+    n_new = len(out["inserted"])
+    n_ref = len(out.get("refreshed", []))
+    print(f"\nOrchestrator complete. {n_new} new pending item(s), "
+          f"{n_ref} existing item(s) refreshed (deduped).")
     for r in out["results"]:
         mark = "✓" if r["executed"] else ("⊘" if r["skipped"] else "○")
         print(f"  {mark} {r['id']} {r['title'][:60]} — {r['reason']}")

@@ -137,9 +137,55 @@ class PendingTracker:
             print(f"  sqlite write failed: {exc}", file=sys.stderr)
 
     # ---------------------------------------------------------------- CRUD
+    def find_open(self, source, title):
+        """Return an existing non-terminal record for this source+title, else None.
+
+        Cross-run dedupe (audit 2026-11-07): `add()` used to append a fresh
+        UUID on every call, so re-running the orchestrator duplicated every
+        item (5 unique titles -> 13 ledger rows after two runs). Scheduling
+        that daily would have bloated the ledger one row per item per day.
+
+        Only `open`, `in_progress` and `blocked` records match. A `done` or
+        `dismissed` item is deliberately excluded: if the same signal comes
+        back after being closed, that is new information and deserves its own
+        record rather than silently reopening a finished one.
+        """
+        active = ("open", "in_progress", "blocked")
+        for rec in self._read_ledger():
+            if not isinstance(rec, dict) or not rec.get("id"):
+                continue
+            if rec.get("status") not in active:
+                continue
+            if rec.get("source") == source and rec.get("title") == title:
+                return rec
+        return None
+
     def add(self, source, title, body, impact=3, urgency=3, effort=3,
             suggested_action="review", draft="", action_type="review",
             action_target="", due=None, metadata=None):
+        existing = self.find_open(source, title)
+        if existing is not None:
+            # Refresh in place: keep the original id and created_at, bump
+            # updated_at so the item's aging stays truthful.
+            existing["body"] = body or existing.get("body", "")
+            existing["updated_at"] = now_iso()
+            if metadata:
+                merged = dict(existing.get("metadata") or {})
+                merged.update(metadata)
+                existing["metadata"] = merged
+            existing["score"] = self.score(
+                existing.get("impact", 3),
+                existing.get("urgency", 3),
+                existing.get("effort", 3),
+            )
+            self._rewrite_ledger(
+                [existing if r.get("id") == existing["id"] else r
+                 for r in self._read_ledger()]
+            )
+            self._write_sqlite(existing)
+            existing["_refreshed"] = True
+            return existing
+
         rec = {
             "id": f"pending-{uuid.uuid4().hex[:8]}",
             "source": source,
@@ -161,6 +207,9 @@ class PendingTracker:
         rec["score"] = self.score(rec["impact"], rec["urgency"], rec["effort"])
         self._append_ledger(rec)
         self._write_sqlite(rec)
+        # Set after both writes: `_refreshed` is a per-run signal for the
+        # orchestrator, not part of the stored record.
+        rec["_refreshed"] = False
         return rec
 
     def get(self, item_id):
@@ -269,10 +318,14 @@ def main():
     ap.add_argument("--body", help="body for new item")
     ap.add_argument("--id", help="item id to operate on")
     ap.add_argument("--score", action="store_true", help="show score for --id")
-    ap.add_argument("--impact", type=int, default=3)
-    ap.add_argument("--urgency", type=int, default=3)
-    ap.add_argument("--effort", type=int, default=3)
-    ap.add_argument("--action", default="review", help="suggested action type")
+    ap.add_argument("--impact", type=int, default=None,
+                    help="impact 1-5 (add defaults to 3; update keeps existing value)")
+    ap.add_argument("--urgency", type=int, default=None,
+                    help="urgency 1-5 (add defaults to 3; update keeps existing value)")
+    ap.add_argument("--effort", type=int, default=None,
+                    help="effort 1-5 (add defaults to 3; update keeps existing value)")
+    ap.add_argument("--action", default=None,
+                    help="suggested action type (add defaults to 'review'; update keeps existing value)")
     ap.add_argument("--target", default="", help="action target")
     ap.add_argument("--due", default="", help="due date ISO")
     ap.add_argument("--delete", action="store_true", help="delete --id from the tracker")
@@ -293,8 +346,12 @@ def main():
             source=args.source or "manual",
             title=args.title,
             body=args.body or "",
-            impact=args.impact, urgency=args.urgency, effort=args.effort,
-            action_type=args.action, action_target=args.target, due=args.due,
+            impact=args.impact if args.impact is not None else 3,
+            urgency=args.urgency if args.urgency is not None else 3,
+            effort=args.effort if args.effort is not None else 3,
+            action_type=args.action or "review",
+            action_target=args.target or "",
+            due=args.due or "",
         )
         print(json.dumps(rec, indent=2, default=str))
         return 0
@@ -327,9 +384,11 @@ def main():
             rec = tr.update(args.id, **fields)
             print(json.dumps(rec, indent=2, default=str))
         elif args.score:
-            print(json.dumps({"id": rec["id"], "score": rec["score"],
-                              "impact": rec["impact"], "urgency": rec["urgency"],
-                              "effort": rec["effort"]}, indent=2))
+            print(json.dumps({"id": rec.get("id", args.id),
+                              "score": rec.get("score", 0),
+                              "impact": rec.get("impact", 0),
+                              "urgency": rec.get("urgency", 0),
+                              "effort": rec.get("effort", 0)}, indent=2))
         else:
             print(json.dumps(rec, indent=2, default=str))
         return 0
@@ -338,7 +397,14 @@ def main():
         rows = tr._read_ledger()
         seen = {}
         keep = []
+        malformed = 0
         for r in rows:
+            if not isinstance(r, dict) or not r.get("id") or not r.get("title"):
+                # Partial/malformed record: keep it in place rather than crash
+                # the rewrite or silently drop data (audit 2026-11-06, B-8).
+                malformed += 1
+                keep.append(r)
+                continue
             key = (r.get("source", ""), r.get("title", ""))
             if key in seen:
                 # keep the newer one (by updated_at)
@@ -354,6 +420,8 @@ def main():
             con = sqlite3.connect(tr.db_file)
             con.execute("DELETE FROM pending_items")
             for r in keep:
+                if not isinstance(r, dict) or not r.get("id"):
+                    continue
                 con.execute(
                     """INSERT OR REPLACE INTO pending_items
                     (id, source, title, body, status, score, impact, urgency, effort,
@@ -361,18 +429,23 @@ def main():
                      created_at, updated_at, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        r["id"], r["source"], r["title"], r["body"], r["status"],
-                        r["score"], r["impact"], r["urgency"], r["effort"],
-                        r["suggested_action"], r["draft"], r["action_type"],
-                        r["action_target"], r["due"], r["created_at"],
-                        r["updated_at"], json.dumps(r.get("metadata", {})),
+                        r.get("id", ""), r.get("source", ""), r.get("title", ""),
+                        r.get("body", ""), r.get("status", ""),
+                        r.get("score", 0), r.get("impact", 0), r.get("urgency", 0),
+                        r.get("effort", 0), r.get("suggested_action", ""),
+                        r.get("draft", ""), r.get("action_type", ""),
+                        r.get("action_target", ""), r.get("due", ""),
+                        r.get("created_at", ""), r.get("updated_at", ""),
+                        json.dumps(r.get("metadata", {})),
                     ),
                 )
             con.commit()
             con.close()
-        except sqlite3.Error:
-            pass
-        print(f"deduped: {removed} duplicate(s) removed, {len(keep)} item(s) remain")
+        except sqlite3.Error as exc:
+            print(f"  sqlite rebuild failed (ledger kept as source of truth): {exc}",
+                  file=sys.stderr)
+        note = f", {malformed} malformed record(s) preserved unchanged" if malformed else ""
+        print(f"deduped: {removed} duplicate(s) removed, {len(keep)} item(s) remain{note}")
         return 0
 
     if args.list or args.export:
@@ -380,10 +453,13 @@ def main():
         if args.export == "md":
             lines = ["# Pending Items\n", ""]
             for r in rows:
-                lines.append(f"## [{r['id']}] {r['title']}")
-                lines.append(f"- source: {r['source']}  |  status: {r['status']}")
-                lines.append(f"- score: {r['score']}  (impact {r['impact']} × urgency {r['urgency']} / effort {r['effort'] + 1})")
-                lines.append(f"- action: {r['action_type']} → {r['action_target'] or '-'}")
+                if not isinstance(r, dict):
+                    lines.append("## (malformed record — non-dict JSONL line, left untouched)")
+                    continue
+                lines.append(f"## [{r.get('id', '?')}] {r.get('title', '(untitled — partial record)')}")
+                lines.append(f"- source: {r.get('source', '-')}  |  status: {r.get('status', '-')}")
+                lines.append(f"- score: {r.get('score', 0)}  (impact {r.get('impact', 0)} × urgency {r.get('urgency', 0)} / effort {r.get('effort', 0) + 1})")
+                lines.append(f"- action: {r.get('action_type', '-')} → {r.get('action_target') or '-'}")
                 lines.append(f"- due: {r['due'] or '-'}")
                 lines.append(f"- draft: {r['draft'][:200]}{'...' if len(r['draft']) > 200 else ''}")
                 lines.append("")
