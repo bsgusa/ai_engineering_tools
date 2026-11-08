@@ -1,6 +1,23 @@
 # AI Engineering Toolkit configuration
 # Copy this file to config.yaml and fill in your values.
 # Never commit config.yaml (it may contain keys). It is gitignored.
+#
+# BEFORE THIS WORKS — two things bit us on 2026-11-07:
+#
+# 1. pyyaml must be installed. The toolkit is stdlib-only by design, and
+#    ai_drafts.py / orchestrator.py both do `except ImportError: yaml = None`.
+#    With no pyyaml, config.yaml is NEVER read and the LLM stays disabled
+#    with no warning — you get template drafts and no error.
+#       python3 -m pip install --user pyyaml
+#
+# 2. provider/base_url must agree. With provider: ollama the code builds
+#       base_url + "/api/chat"
+#    so base_url "http://localhost:11434/v1" produces ".../v1/api/chat" -> 404
+#    -> silent template fallback. Correct pairs, both live-verified 2026-11-07:
+#       provider: ollama            base_url: http://localhost:11434   (/api/chat)
+#       provider: openai-compatible base_url: http://localhost:11434/v1 (/v1/chat/completions)
+#
+# The working config.yaml on this machine uses the first pair, model llama3.2.
 
 paths:
   # Your existing repos
@@ -17,9 +34,12 @@ paths:
 llm:
   enabled: false
   provider: openai-compatible   # openai-compatible | ollama | anthropic | none
-  base_url: http://localhost:11434/v1   # ollama default
-  model: nemotron-3.5-super   # or any model you have access to
-  api_key: ${LLM_API_KEY}       # set in env; never hardcode
+  # CAUTION (see header): with provider `ollama`, base_url must be
+  # http://localhost:11434 (no /v1) or the built URL 404s. The value below is
+  # correct ONLY for provider `openai-compatible`.
+  base_url: http://localhost:11434/v1   # ollama default (OpenAI-compatible)
+  model: nemotron-3.5-super   # OR any model you actually have: `ollama list`
+  api_key: ${LLM_API_KEY}       # set in env; never hardcode. Ollama needs none.
   temperature: 0.3
   max_tokens: 600
 
