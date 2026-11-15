@@ -1,0 +1,36 @@
+{
+  "engine": "code_sweep",
+  "version": "1.0.0",
+  "engine_ref": "code-sweep-v1",
+  "engine_repo": "bsgusa/ai_engineering_tools",
+  "budget": {
+    "model": "openai/gpt-4o-mini",
+    "max_output_tokens": 12000,
+    "source_budget_chars": 60000,
+    "max_files": 14,
+    "max_file_chars": 12000,
+    "max_changes_per_run": 3,
+    "max_call_per_run": 1
+  },
+  "checks": {
+    "blocking": ["lint", "typecheck", "test", "check:claims"],
+    "advisory": ["build_tsc", "audit", "outdated"]
+  },
+  "repos": [
+    { "name": "company-balamonis",      "tier": "money", "enabled": true,  "sweep_cron": "17 6 * * *", "ai_cron": "7 8 * * 1" },
+    { "name": "company-lexora-jobs",     "tier": "money", "enabled": true,  "sweep_cron": "23 6 * * *", "ai_cron": "13 8 * * 1" },
+    { "name": "company-lexora-legal",    "tier": "money", "enabled": true,  "sweep_cron": "29 6 * * *", "ai_cron": "19 8 * * 1" },
+    { "name": "bala-ai",                 "tier": "money", "enabled": true,  "sweep_cron": "35 6 * * *", "ai_cron": "25 8 * * 1" },
+    { "name": "command-center-bala",     "tier": "core",  "enabled": true,  "sweep_cron": "41 6 * * *", "ai_cron": "31 8 * * 1" },
+    { "name": "balamonis_group_main",    "tier": "core",  "enabled": true,  "sweep_cron": "47 6 * * *", "ai_cron": "37 8 * * 1" }
+  ],
+  "excluded_by_design": {
+    "bala-nexus": "docs hub — no build, no deps; sweep would only re-report an empty result",
+    "bala-pulse": "static docs",
+    "bala-voice": "static docs",
+    "bala-archives": "static docs",
+    "bala-weave": "static docs",
+    "lexora-letterpad": "empty repo (B-045)",
+    "company-lexora-legal-tech-ops-": "legacy duplicate of company-lexora-legal"
+  }
+}
